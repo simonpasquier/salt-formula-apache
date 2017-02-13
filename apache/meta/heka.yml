@@ -1,33 +1,42 @@
 {%- from "apache/map.jinja" import server with context %}
-{%- if server.get('enabled', False) and server.get('site', {}).values()|selectattr("type", "equalto", "keystone")|list|length > 0 %}
+{%- if server.get('enabled', False) %}
+
+{%- set log_collector_decoder = {} %}
+{%- set log_collector_input = {} %}
+
+{%- for site_name, site in server.site.iteritems() %}
+
+{%- if site.type == 'keystone' %}
+{%- do log_collector_decoder.update({
+  'keystone_wsgi': {
+    'engine': 'sandbox',
+    'module_file': '/usr/share/lma_collector/decoders/keystone_wsgi_log.lua',
+    'module_dir': '/usr/share/lma_collector/common;/usr/share/heka/lua_modules',
+    'config': {
+        'apache_log_pattern': site.get('log', {}).get('custom', {}).format|default('vhost_combined'),
+    }
+  }
+} %}
+
+{%- set apache_log_file = site.get('log', {}).get('custom', {}).file|default(server.log_dir ~ '/' ~ site_name ~ '.access.log') %}
+{%- do log_collector_input.update({
+  'keystone_wsgi_log': {
+      'engine': 'logstreamer',
+      'log_directory': salt['file.dirname'](apache_log_file),
+      'file_match': salt['file.basename'](apache_log_file)|replace('.', '\.') ~ '\.?(?P<Seq>\d*)$',
+      'differentiator': ['keystone-wsgi'],
+      'priority': ["^Seq"],
+      'decoder': "keystone_wsgi_decoder",
+      'splitter': "TokenSplitter",
+    }
+  }
+} %}
+
+{%- endif %}
+{%- endfor %}
 
 log_collector:
-  decoder:
-{%- for site_name, site in server.site.iteritems() %}
-{%- if site.type == 'keystone' %}
-    keystone_wsgi:
-      engine: sandbox
-      module_file: /usr/share/lma_collector/decoders/keystone_wsgi_log.lua
-      module_dir: /usr/share/lma_collector/common;/usr/share/heka/lua_modules
-      config:
-        apache_log_pattern: >-
-          {{ site.get('log', {}).get('custom', {}).format|default('vhost_combined') }}
-{%- endif %}
-{%- endfor %}
-
-  input:
-{%- for site_name, site in server.site.iteritems() %}
-{%- if site.type == 'keystone' %}
-{%- set apache_log_file = site.get('log', {}).get('custom', {}).file|default(server.log_dir ~ '/' ~ site_name ~ '.access.log') %}
-    keystone_wsgi_log:
-      engine: logstreamer
-      log_directory: "{{ salt['file.dirname'](apache_log_file) }}"
-      file_match: '{{ salt['file.basename'](apache_log_file)|replace('.', '\.') }}\.?(?P<Seq>\d*)$'
-      differentiator: ['keystone-wsgi']
-      priority: ["^Seq"]
-      decoder: "keystone_wsgi_decoder"
-      splitter: "TokenSplitter"
-{%- endif %}
-{%- endfor %}
+  decoder: {{ log_collector_decoder|yaml }}
+  input: {{ log_collector_input|yaml }}
 
 {%- endif %}
